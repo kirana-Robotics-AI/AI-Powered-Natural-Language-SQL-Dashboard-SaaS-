@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 import pandas as pd
 from sqlalchemy import create_engine, text
 from main import ask_db
@@ -7,6 +8,10 @@ import plotly.express as px
 
 # ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
+
+# 🔍 DEBUG (REMOVE LATER)
+st.write("API KEY EXISTS:", bool(os.getenv("OPENAI_API_KEY")))
+
 init_db()
 
 # ================= SESSION =================
@@ -16,7 +21,6 @@ if "logged_in" not in st.session_state:
 if "engine" not in st.session_state:
     st.session_state.engine = None
 
-# 🔥 IMPORTANT FIX (STATE FOR RESULTS)
 if "df" not in st.session_state:
     st.session_state.df = None
 
@@ -38,10 +42,8 @@ if not st.session_state.logged_in:
 
         if st.button("Login"):
             success, result = login_user(username, password)
-
             if success:
                 st.session_state.logged_in = True
-                st.success("Login successful")
                 st.rerun()
             else:
                 st.error(result)
@@ -52,7 +54,6 @@ if not st.session_state.logged_in:
 
         if st.button("Create Account"):
             success, msg = register_user(new_user, new_pass)
-
             if success:
                 st.success(msg)
             else:
@@ -105,7 +106,6 @@ st.title("🤖 AI SQL Dashboard")
 
 query = st.text_input("Ask your database")
 
-# ================= RUN QUERY =================
 if st.button("Run Query"):
 
     if not st.session_state.engine:
@@ -113,25 +113,22 @@ if st.button("Run Query"):
         st.stop()
 
     if not query.strip():
-        st.warning("Please enter a query")
+        st.warning("Enter a query")
         st.stop()
 
-    with st.spinner("Generating SQL & fetching data..."):
+    with st.spinner("Processing..."):
         df, sql, error = ask_db(query, st.session_state.engine)
 
-    # 🔥 STORE IN SESSION (FIX)
     st.session_state.df = df
     st.session_state.sql = sql
     st.session_state.error = error
 
-# ================= DISPLAY (OUTSIDE BUTTON) =================
+# ================= DISPLAY =================
 if st.session_state.sql:
 
-    # SQL hidden
-    with st.expander("🧠 View Generated SQL"):
-        st.code(st.session_state.sql, language="sql")
+    with st.expander("🧠 SQL"):
+        st.code(st.session_state.sql)
 
-    # Error handling
     if st.session_state.error:
         st.error(st.session_state.error)
         st.stop()
@@ -139,53 +136,35 @@ if st.session_state.sql:
     df = st.session_state.df
 
     if df is None or df.empty:
-        st.warning("No data found")
+        st.warning("No data")
         st.stop()
 
-    st.success("✅ Query executed successfully")
+    st.success("✅ Success")
 
-    # Center table styling
-    st.markdown(
-        """
-        <style>
-        .dataframe th, .dataframe td {
-            text-align: center !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    chart = st.selectbox("View", ["Table", "Bar", "Line", "Pie"])
 
-    # Detect columns
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
-    text_cols = df.select_dtypes(include=['object']).columns.tolist()
-
-    # Chart selector (FIXED)
-    chart_type = st.selectbox(
-        "Choose view",
-        ["Table", "Bar", "Line", "Pie"]
-    )
-
-    if chart_type == "Table":
+    if chart == "Table":
         st.dataframe(df, use_container_width=True)
 
-    elif chart_type == "Bar":
-        if numeric_cols and text_cols:
-            fig = px.bar(df, x=text_cols[0], y=numeric_cols[0])
-            st.plotly_chart(fig, use_container_width=True)
+    elif chart == "Bar":
+        num = df.select_dtypes(include=['number']).columns
+        txt = df.select_dtypes(include=['object']).columns
+        if len(num) and len(txt):
+            st.plotly_chart(px.bar(df, x=txt[0], y=num[0]))
         else:
-            st.warning("Need text + numeric column")
+            st.warning("Need text + numeric")
 
-    elif chart_type == "Line":
-        if numeric_cols:
-            fig = px.line(df, y=numeric_cols[0])
-            st.plotly_chart(fig, use_container_width=True)
+    elif chart == "Line":
+        num = df.select_dtypes(include=['number']).columns
+        if len(num):
+            st.plotly_chart(px.line(df, y=num[0]))
         else:
-            st.warning("Need numeric column")
+            st.warning("Need numeric")
 
-    elif chart_type == "Pie":
-        if numeric_cols and text_cols:
-            fig = px.pie(df, names=text_cols[0], values=numeric_cols[0])
-            st.plotly_chart(fig, use_container_width=True)
+    elif chart == "Pie":
+        num = df.select_dtypes(include=['number']).columns
+        txt = df.select_dtypes(include=['object']).columns
+        if len(num) and len(txt):
+            st.plotly_chart(px.pie(df, names=txt[0], values=num[0]))
         else:
-            st.warning("Need text + numeric column")
+            st.warning("Need text + numeric")

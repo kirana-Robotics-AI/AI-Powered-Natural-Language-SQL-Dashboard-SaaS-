@@ -4,12 +4,16 @@ from openai import OpenAI
 import os
 
 # =========================
-# INIT OPENAI
+# INIT OPENAI (SAFE)
 # =========================
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+api_key = os.getenv("OPENAI_API_KEY")
+
+client = None
+if api_key:
+    client = OpenAI(api_key=api_key)
 
 # =========================
-# CACHE SCHEMA (IMPORTANT)
+# CACHE SCHEMA
 # =========================
 _schema_cache = {}
 
@@ -39,7 +43,7 @@ def get_schema(engine):
 
 
 # =========================
-# CLEAN SQL OUTPUT
+# CLEAN SQL
 # =========================
 def clean_sql(sql):
     if not sql:
@@ -47,13 +51,11 @@ def clean_sql(sql):
 
     sql = sql.replace("```sql", "").replace("```", "").strip()
 
-    # Remove comments
     lines = sql.split("\n")
     clean_lines = [l for l in lines if not l.strip().startswith("--")]
 
     sql = " ".join(clean_lines)
 
-    # Remove multiple queries
     if ";" in sql:
         sql = sql.split(";")[0]
 
@@ -61,14 +63,11 @@ def clean_sql(sql):
 
 
 # =========================
-# ENFORCE SAFE SQL
+# VALIDATE SQL
 # =========================
 def validate_sql(sql):
-    sql_lower = sql.lower()
-
-    if not sql_lower.startswith("select"):
+    if not sql.lower().startswith("select"):
         return False, "Only SELECT queries allowed"
-
     return True, None
 
 
@@ -85,18 +84,19 @@ def ensure_limit(sql):
 # GENERATE SQL
 # =========================
 def generate_sql(question, schema):
+    if client is None:
+        return None
+
     prompt = f"""
 You are an expert SQL engineer.
 
 DATABASE SCHEMA:
 {schema}
 
-STRICT RULES:
-- Use ONLY tables and columns from schema
-- NEVER guess column names
+RULES:
+- Use ONLY schema
 - Only SELECT queries
-- Use proper joins
-- Add LIMIT 10 unless aggregation
+- Add LIMIT 10
 
 Question:
 {question}
@@ -109,11 +109,9 @@ Return ONLY SQL.
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
         )
+        return clean_sql(res.choices[0].message.content)
 
-        sql = res.choices[0].message.content.strip()
-        return clean_sql(sql)
-
-    except:
+    except Exception:
         return None
 
 
@@ -121,8 +119,11 @@ Return ONLY SQL.
 # FIX SQL
 # =========================
 def fix_sql(error, bad_sql, schema):
+    if client is None:
+        return None
+
     prompt = f"""
-Fix this SQL query.
+Fix SQL.
 
 SCHEMA:
 {schema}
@@ -130,14 +131,8 @@ SCHEMA:
 ERROR:
 {error}
 
-BAD SQL:
+SQL:
 {bad_sql}
-
-RULES:
-- Use only schema columns
-- Only SELECT
-- Correct joins
-- Return valid SQL
 
 Return ONLY SQL.
 """
@@ -147,9 +142,7 @@ Return ONLY SQL.
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
         )
-
-        sql = res.choices[0].message.content.strip()
-        return clean_sql(sql)
+        return clean_sql(res.choices[0].message.content)
 
     except:
         return None
@@ -165,55 +158,43 @@ def execute_sql(engine, sql):
             rows = result.fetchall()
             cols = result.keys()
 
-        df = pd.DataFrame(rows, columns=cols)
-
-        return df, None
+        return pd.DataFrame(rows, columns=cols), None
 
     except Exception as e:
         return None, str(e)
 
 
 # =========================
-# MAIN PIPELINE (FIXED)
+# MAIN PIPELINE
 # =========================
 def ask_db(question, engine):
+
+    if client is None:
+        return None, None, "OPENAI_API_KEY not set"
+
     schema = get_schema(engine)
 
-    # STEP 1: Generate SQL
     sql = generate_sql(question, schema)
-
     if not sql:
-        return None, None, "Failed to generate SQL"
+        return None, None, "SQL generation failed"
 
-    # STEP 2: Validate
     valid, msg = validate_sql(sql)
     if not valid:
         return None, sql, msg
 
-    # STEP 3: Ensure LIMIT
     sql = ensure_limit(sql)
 
-    # STEP 4: Execute
     df, error = execute_sql(engine, sql)
 
     if df is not None:
         return df, sql, None
 
-    # STEP 5: Retry FIX
     fixed_sql = fix_sql(error, sql, schema)
 
     if fixed_sql:
-        valid, msg = validate_sql(fixed_sql)
-        if not valid:
-            return None, fixed_sql, msg
-
-        fixed_sql = ensure_limit(fixed_sql)
-
-        df, error2 = execute_sql(engine, fixed_sql)
-
+        df, error2 = execute_sql(engine, ensure_limit(fixed_sql))
         if df is not None:
             return df, fixed_sql, None
-
         return None, fixed_sql, error2
 
     return None, sql, error
