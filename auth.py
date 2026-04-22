@@ -1,32 +1,54 @@
 import sqlite3
 import hashlib
+import os
 
-DB_FILE = "users.db"
+# ✅ Use absolute safe path
+DB_FILE = os.path.join(os.getcwd(), "users.db")
 
+
+# =========================
+# SAFE CONNECTION
+# =========================
+def get_connection():
+    return sqlite3.connect(DB_FILE, check_same_thread=False)
+
+
+# =========================
+# INIT DB (SAFE)
+# =========================
 def init_db():
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    try:
+        conn = get_connection()
+        c = conn.cursor()
 
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE,
-        password TEXT
-    )
-    """)
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE,
+            password TEXT
+        )
+        """)
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
+
+    except Exception as e:
+        print(f"DB INIT ERROR: {e}")
 
 
+# =========================
+# HASH PASSWORD
+# =========================
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 
-# ✅ FIXED REGISTER (returns tuple)
+# =========================
+# REGISTER USER
+# =========================
 def register_user(username, password):
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = get_connection()
         c = conn.cursor()
 
         c.execute(
@@ -46,20 +68,26 @@ def register_user(username, password):
         return False, str(e)
 
 
-# ✅ FIXED LOGIN (returns tuple)
+# =========================
+# LOGIN USER
+# =========================
 def login_user(username, password):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    try:
+        conn = get_connection()
+        c = conn.cursor()
 
-    c.execute(
-        "SELECT * FROM users WHERE username=? AND password=?",
-        (username, hash_password(password))
-    )
+        c.execute(
+            "SELECT * FROM users WHERE username=? AND password=?",
+            (username, hash_password(password))
+        )
 
-    user = c.fetchone()
-    conn.close()
+        user = c.fetchone()
+        conn.close()
 
-    if user:
-        return True, user
-    else:
-        return False, "Invalid username or password"
+        if user:
+            return True, user
+        else:
+            return False, "Invalid username or password"
+
+    except Exception as e:
+        return False, str(e)
