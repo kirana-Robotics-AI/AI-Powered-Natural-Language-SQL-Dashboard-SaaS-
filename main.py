@@ -3,9 +3,7 @@ import pandas as pd
 from openai import OpenAI
 import os
 
-# =========================
-# SAFE OPENAI INIT (FIXED)
-# =========================
+# ================= SAFE OPENAI =================
 _client = None
 
 def get_client():
@@ -17,7 +15,7 @@ def get_client():
     api_key = os.getenv("OPENAI_API_KEY")
 
     if not api_key:
-        return None  # DO NOT CRASH
+        return None  # don't crash
 
     try:
         _client = OpenAI(api_key=api_key)
@@ -26,49 +24,33 @@ def get_client():
         return None
 
 
-# =========================
-# CACHE SCHEMA
-# =========================
+# ================= SCHEMA CACHE =================
 _schema_cache = {}
 
 def get_schema(engine):
-    global _schema_cache
-
-    engine_id = str(engine.url)
-
-    if engine_id in _schema_cache:
-        return _schema_cache[engine_id]
-
     try:
         inspector = inspect(engine)
         schema = ""
 
         for table in inspector.get_table_names():
             schema += f"\nTable: {table}\nColumns:\n"
-
             for col in inspector.get_columns(table):
                 schema += f"- {col['name']} ({col['type']})\n"
 
-        _schema_cache[engine_id] = schema
         return schema
 
     except Exception as e:
         return f"Schema error: {str(e)}"
 
 
-# =========================
-# CLEAN SQL
-# =========================
+# ================= SQL HELPERS =================
 def clean_sql(sql):
     if not sql:
         return None
 
     sql = sql.replace("```sql", "").replace("```", "").strip()
-
-    lines = sql.split("\n")
-    clean_lines = [l for l in lines if not l.strip().startswith("--")]
-
-    sql = " ".join(clean_lines)
+    lines = [l for l in sql.split("\n") if not l.strip().startswith("--")]
+    sql = " ".join(lines)
 
     if ";" in sql:
         sql = sql.split(";")[0]
@@ -76,115 +58,73 @@ def clean_sql(sql):
     return sql.strip()
 
 
-# =========================
-# VALIDATE SQL
-# =========================
 def validate_sql(sql):
     if not sql:
         return False, "No SQL generated"
 
     if not sql.lower().startswith("select"):
-        return False, "Only SELECT queries allowed"
+        return False, "Only SELECT allowed"
 
     return True, None
 
 
-# =========================
-# ENSURE LIMIT
-# =========================
 def ensure_limit(sql):
     if "limit" not in sql.lower():
         return sql + " LIMIT 10"
     return sql
 
 
-# =========================
-# GENERATE SQL (SAFE)
-# =========================
+# ================= GENERATE SQL =================
 def generate_sql(question, schema):
     client = get_client()
-
     if not client:
-        return None  # Prevent crash
+        return None
 
     prompt = f"""
-You are an expert SQL engineer.
+    You are an SQL expert.
 
-DATABASE SCHEMA:
-{schema}
+    SCHEMA:
+    {schema}
 
-STRICT RULES:
-- Use ONLY tables and columns from schema
-- NEVER guess column names
-- Only SELECT queries
-- Use proper joins
-- Add LIMIT 10 unless aggregation
+    RULES:
+    - Only SELECT
+    - Use correct tables
+    - LIMIT 10
 
-Question:
-{question}
-
-Return ONLY SQL.
-"""
+    Question: {question}
+    """
 
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
         )
-
-        sql = res.choices[0].message.content.strip()
-        return clean_sql(sql)
+        return clean_sql(res.choices[0].message.content)
 
     except Exception:
         return None
 
 
-# =========================
-# FIX SQL (SAFE)
-# =========================
 def fix_sql(error, bad_sql, schema):
     client = get_client()
-
     if not client:
         return None
-
-    prompt = f"""
-Fix this SQL query.
-
-SCHEMA:
-{schema}
-
-ERROR:
-{error}
-
-BAD SQL:
-{bad_sql}
-
-RULES:
-- Use only schema columns
-- Only SELECT
-- Correct joins
-- Return valid SQL
-
-Return ONLY SQL.
-"""
 
     try:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}]
+            messages=[{
+                "role": "user",
+                "content": f"Fix SQL:\n{bad_sql}\nError:{error}\nSchema:{schema}"
+            }]
         )
-
-        sql = res.choices[0].message.content.strip()
-        return clean_sql(sql)
+        return clean_sql(res.choices[0].message.content)
 
     except Exception:
         return None
 
 
-# =========================
-# EXECUTE SQL
-# =========================
+# ================= EXECUTE =================
 def execute_sql(engine, sql):
     try:
         with engine.connect() as conn:
@@ -192,54 +132,34 @@ def execute_sql(engine, sql):
             rows = result.fetchall()
             cols = result.keys()
 
-        df = pd.DataFrame(rows, columns=cols)
-        return df, None
+        return pd.DataFrame(rows, columns=cols), None
 
     except Exception as e:
         return None, str(e)
 
 
-# =========================
-# MAIN PIPELINE
-# =========================
+# ================= MAIN =================
 def ask_db(question, engine):
     schema = get_schema(engine)
 
-    # STEP 1: Generate SQL
     sql = generate_sql(question, schema)
-
     if not sql:
-        return None, None, "OpenAI not configured or failed to generate SQL"
+        return None, None, "OpenAI not configured"
 
-    # STEP 2: Validate
     valid, msg = validate_sql(sql)
     if not valid:
         return None, sql, msg
 
-    # STEP 3: Ensure LIMIT
     sql = ensure_limit(sql)
 
-    # STEP 4: Execute
-    df, error = execute_sql(engine, sql)
-
+    df, err = execute_sql(engine, sql)
     if df is not None:
         return df, sql, None
 
-    # STEP 5: Fix SQL
-    fixed_sql = fix_sql(error, sql, schema)
-
-    if fixed_sql:
-        valid, msg = validate_sql(fixed_sql)
-        if not valid:
-            return None, fixed_sql, msg
-
-        fixed_sql = ensure_limit(fixed_sql)
-
-        df, error2 = execute_sql(engine, fixed_sql)
-
+    fixed = fix_sql(err, sql, schema)
+    if fixed:
+        df, err2 = execute_sql(engine, ensure_limit(fixed))
         if df is not None:
-            return df, fixed_sql, None
+            return df, fixed, None
 
-        return None, fixed_sql, error2
-
-    return None, sql, error
+    return None, sql, err
