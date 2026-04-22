@@ -15,9 +15,9 @@ try:
     # ================= SAFE DB INIT =================
     try:
         init_db()
+        st.sidebar.success("DB initialized")
     except Exception as e:
-        st.error(f"⚠️ DB Init Failed: {e}")
-
+        st.sidebar.error(f"DB init failed: {e}")
     # ================= SESSION =================
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
