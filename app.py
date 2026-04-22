@@ -1,4 +1,5 @@
 import streamlit as st
+import os
 import pandas as pd
 from sqlalchemy import create_engine, text
 from main import ask_db
@@ -7,12 +8,7 @@ import plotly.express as px
 
 # ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
-
-# ================= SAFE INIT =================
-try:
-    init_db()
-except Exception as e:
-    st.error(f"DB Init Failed: {e}")
+init_db()
 
 # ================= SESSION =================
 if "logged_in" not in st.session_state:
@@ -30,7 +26,7 @@ if "sql" not in st.session_state:
 if "error" not in st.session_state:
     st.session_state.error = None
 
-# ================= LOGIN PAGE =================
+# ================= LOGIN =================
 if not st.session_state.logged_in:
     st.title("🔐 Login")
 
@@ -62,111 +58,100 @@ if not st.session_state.logged_in:
             else:
                 st.error(msg)
 
-    # 🚀 IMPORTANT: DO NOT STOP THE APP
-    st.info("👆 Please login to continue")
+    st.stop()
 
-# ================= MAIN APP =================
+# ================= SIDEBAR =================
+st.sidebar.title("⚙️ Database Connection")
+
+db_type = st.sidebar.selectbox("DB Type", ["MySQL", "SQLite"])
+
+if db_type == "MySQL":
+    host = st.sidebar.text_input("Host")
+    user = st.sidebar.text_input("User")
+    password = st.sidebar.text_input("Password", type="password")
+    db = st.sidebar.text_input("Database Name")
 else:
+    sqlite_path = st.sidebar.text_input("SQLite file path")
 
-    # ================= SIDEBAR =================
-    st.sidebar.title("⚙️ Database Connection")
-
-    db_type = st.sidebar.selectbox("DB Type", ["MySQL", "SQLite"])
-
-    if db_type == "MySQL":
-        host = st.sidebar.text_input("Host")
-        user = st.sidebar.text_input("User")
-        password = st.sidebar.text_input("Password", type="password")
-        db = st.sidebar.text_input("Database Name")
-    else:
-        sqlite_path = st.sidebar.text_input("SQLite file path")
-
-    def connect_db():
-        try:
-            if db_type == "MySQL":
-                engine = create_engine(
-                    f"mysql+pymysql://{user}:{password}@{host}/{db}"
-                )
-            else:
-                engine = create_engine(f"sqlite:///{sqlite_path}")
-
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-
-            st.session_state.engine = engine
-            st.success("✅ Connected successfully")
-
-        except Exception as e:
-            st.error(f"❌ Connection failed: {str(e)}")
-
-    if st.sidebar.button("Connect"):
-        connect_db()
-
-    if st.sidebar.button("Reset"):
-        st.session_state.engine = None
-        st.rerun()
-
-    if st.sidebar.button("Logout"):
-        st.session_state.clear()
-        st.rerun()
-
-    # ================= MAIN UI =================
-    st.title("🤖 AI SQL Dashboard")
-
-    query = st.text_input("Ask your database")
-
-    if st.button("Run Query"):
-
-        if not st.session_state.engine:
-            st.warning("Connect database first")
-
-        elif not query.strip():
-            st.warning("Please enter a query")
-
+def connect_db():
+    try:
+        if db_type == "MySQL":
+            engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{db}")
         else:
-            with st.spinner("Generating SQL & fetching data..."):
-                df, sql, error = ask_db(query, st.session_state.engine)
+            engine = create_engine(f"sqlite:///{sqlite_path}")
 
-            st.session_state.df = df
-            st.session_state.sql = sql
-            st.session_state.error = error
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
 
-    # ================= DISPLAY =================
-    if st.session_state.sql:
+        st.session_state.engine = engine
+        st.success("✅ Connected successfully")
 
-        with st.expander("🧠 View Generated SQL"):
-            st.code(st.session_state.sql, language="sql")
+    except Exception as e:
+        st.error(f"❌ Connection failed: {str(e)}")
 
-        if st.session_state.error:
-            st.error(st.session_state.error)
+if st.sidebar.button("Connect"):
+    connect_db()
 
-        else:
-            df = st.session_state.df
+# ================= MAIN =================
+st.title("🤖 AI SQL Dashboard")
 
-            if df is None or df.empty:
-                st.warning("No data found")
+query = st.text_input("Ask your database")
 
-            else:
-                st.success("✅ Query executed successfully")
+if st.button("Run Query"):
 
-                st.dataframe(df, use_container_width=True)
+    if not st.session_state.engine:
+        st.warning("Connect database first")
+        st.stop()
 
-                numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
-                text_cols = df.select_dtypes(include=['object']).columns.tolist()
+    if not query.strip():
+        st.warning("Enter a query")
+        st.stop()
 
-                chart_type = st.selectbox(
-                    "Choose view",
-                    ["Table", "Bar", "Line", "Pie"]
-                )
+    with st.spinner("Processing..."):
+        df, sql, error = ask_db(query, st.session_state.engine)
 
-                if chart_type == "Bar" and numeric_cols and text_cols:
-                    fig = px.bar(df, x=text_cols[0], y=numeric_cols[0])
-                    st.plotly_chart(fig, use_container_width=True)
+    st.session_state.df = df
+    st.session_state.sql = sql
+    st.session_state.error = error
 
-                elif chart_type == "Line" and numeric_cols:
-                    fig = px.line(df, y=numeric_cols[0])
-                    st.plotly_chart(fig, use_container_width=True)
+# ================= DISPLAY =================
+if st.session_state.sql:
 
-                elif chart_type == "Pie" and numeric_cols and text_cols:
-                    fig = px.pie(df, names=text_cols[0], values=numeric_cols[0])
-                    st.plotly_chart(fig, use_container_width=True)
+    with st.expander("Generated SQL"):
+        st.code(st.session_state.sql)
+
+    if st.session_state.error:
+        st.error(st.session_state.error)
+        st.stop()
+
+    df = st.session_state.df
+
+    if df is None or df.empty:
+        st.warning("No data")
+        st.stop()
+
+    st.success("Done")
+
+    chart_type = st.selectbox("View", ["Table", "Bar", "Line", "Pie"])
+
+    if chart_type == "Table":
+        st.dataframe(df)
+
+    elif chart_type == "Bar":
+        num = df.select_dtypes(include=['int64','float64']).columns
+        txt = df.select_dtypes(include=['object']).columns
+
+        if len(num) and len(txt):
+            st.plotly_chart(px.bar(df, x=txt[0], y=num[0]))
+
+    elif chart_type == "Line":
+        num = df.select_dtypes(include=['int64','float64']).columns
+        if len(num):
+            st.plotly_chart(px.line(df, y=num[0]))
+
+    elif chart_type == "Pie":
+        num = df.select_dtypes(include=['int64','float64']).columns
+        txt = df.select_dtypes(include=['object']).columns
+
+        if len(num) and len(txt):
+            st.plotly_chart(px.pie(df, names=txt[0], values=num[0]))
