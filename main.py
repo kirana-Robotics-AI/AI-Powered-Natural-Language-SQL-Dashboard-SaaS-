@@ -4,21 +4,26 @@ from openai import OpenAI
 import os
 
 # =========================
-# LAZY OPENAI CLIENT (FIX)
+# SAFE OPENAI INIT (FIXED)
 # =========================
 _client = None
 
 def get_client():
     global _client
-    if _client is None:
-        api_key = os.getenv("OPENAI_API_KEY")
 
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY not set")
+    if _client:
+        return _client
 
+    api_key = os.getenv("OPENAI_API_KEY")
+
+    if not api_key:
+        return None  # DO NOT CRASH
+
+    try:
         _client = OpenAI(api_key=api_key)
-
-    return _client
+        return _client
+    except Exception:
+        return None
 
 
 # =========================
@@ -75,9 +80,10 @@ def clean_sql(sql):
 # VALIDATE SQL
 # =========================
 def validate_sql(sql):
-    sql_lower = sql.lower()
+    if not sql:
+        return False, "No SQL generated"
 
-    if not sql_lower.startswith("select"):
+    if not sql.lower().startswith("select"):
         return False, "Only SELECT queries allowed"
 
     return True, None
@@ -96,6 +102,11 @@ def ensure_limit(sql):
 # GENERATE SQL (SAFE)
 # =========================
 def generate_sql(question, schema):
+    client = get_client()
+
+    if not client:
+        return None  # Prevent crash
+
     prompt = f"""
 You are an expert SQL engineer.
 
@@ -116,8 +127,6 @@ Return ONLY SQL.
 """
 
     try:
-        client = get_client()
-
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
@@ -126,14 +135,19 @@ Return ONLY SQL.
         sql = res.choices[0].message.content.strip()
         return clean_sql(sql)
 
-    except Exception as e:
+    except Exception:
         return None
 
 
 # =========================
-# FIX SQL
+# FIX SQL (SAFE)
 # =========================
 def fix_sql(error, bad_sql, schema):
+    client = get_client()
+
+    if not client:
+        return None
+
     prompt = f"""
 Fix this SQL query.
 
@@ -156,8 +170,6 @@ Return ONLY SQL.
 """
 
     try:
-        client = get_client()
-
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}]
@@ -166,7 +178,7 @@ Return ONLY SQL.
         sql = res.choices[0].message.content.strip()
         return clean_sql(sql)
 
-    except Exception as e:
+    except Exception:
         return None
 
 
@@ -181,7 +193,6 @@ def execute_sql(engine, sql):
             cols = result.keys()
 
         df = pd.DataFrame(rows, columns=cols)
-
         return df, None
 
     except Exception as e:
@@ -192,47 +203,43 @@ def execute_sql(engine, sql):
 # MAIN PIPELINE
 # =========================
 def ask_db(question, engine):
-    try:
-        schema = get_schema(engine)
+    schema = get_schema(engine)
 
-        # STEP 1: Generate SQL
-        sql = generate_sql(question, schema)
+    # STEP 1: Generate SQL
+    sql = generate_sql(question, schema)
 
-        if not sql:
-            return None, None, "Failed to generate SQL"
+    if not sql:
+        return None, None, "OpenAI not configured or failed to generate SQL"
 
-        # STEP 2: Validate
-        valid, msg = validate_sql(sql)
+    # STEP 2: Validate
+    valid, msg = validate_sql(sql)
+    if not valid:
+        return None, sql, msg
+
+    # STEP 3: Ensure LIMIT
+    sql = ensure_limit(sql)
+
+    # STEP 4: Execute
+    df, error = execute_sql(engine, sql)
+
+    if df is not None:
+        return df, sql, None
+
+    # STEP 5: Fix SQL
+    fixed_sql = fix_sql(error, sql, schema)
+
+    if fixed_sql:
+        valid, msg = validate_sql(fixed_sql)
         if not valid:
-            return None, sql, msg
+            return None, fixed_sql, msg
 
-        # STEP 3: Ensure LIMIT
-        sql = ensure_limit(sql)
+        fixed_sql = ensure_limit(fixed_sql)
 
-        # STEP 4: Execute
-        df, error = execute_sql(engine, sql)
+        df, error2 = execute_sql(engine, fixed_sql)
 
         if df is not None:
-            return df, sql, None
+            return df, fixed_sql, None
 
-        # STEP 5: Fix SQL
-        fixed_sql = fix_sql(error, sql, schema)
+        return None, fixed_sql, error2
 
-        if fixed_sql:
-            valid, msg = validate_sql(fixed_sql)
-            if not valid:
-                return None, fixed_sql, msg
-
-            fixed_sql = ensure_limit(fixed_sql)
-
-            df, error2 = execute_sql(engine, fixed_sql)
-
-            if df is not None:
-                return df, fixed_sql, None
-
-            return None, fixed_sql, error2
-
-        return None, sql, error
-
-    except Exception as e:
-        return None, None, str(e)
+    return None, sql, error
