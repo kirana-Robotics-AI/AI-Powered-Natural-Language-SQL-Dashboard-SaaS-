@@ -10,22 +10,22 @@ client = OpenAI(api_key=api_key) if api_key else None
 _schema_cache = {}
 
 def get_schema(engine):
-    engine_id = str(engine.url)
-
-    if engine_id in _schema_cache:
-        return _schema_cache[engine_id]
-
     inspector = inspect(engine)
     schema = ""
 
     for table in inspector.get_table_names():
         schema += f"\nTable: {table}\nColumns:\n"
-        for col in inspector.get_columns(table):
+
+        columns = inspector.get_columns(table)
+        for col in columns:
             schema += f"- {col['name']} ({col['type']})\n"
 
-    _schema_cache[engine_id] = schema
-    return schema
+        # 🔥 ADD FOREIGN KEYS
+        fks = inspector.get_foreign_keys(table)
+        for fk in fks:
+            schema += f"FK: {fk['constrained_columns']} → {fk['referred_table']}.{fk['referred_columns']}\n"
 
+    return schema
 
 def clean_sql(sql):
     if not sql:
@@ -45,27 +45,23 @@ def ensure_limit(sql):
     return sql if "limit" in sql.lower() else sql + " LIMIT 10"
 
 
-def generate_sql(question, schema):
-    if not client:
-        return None
+def get_schema(engine):
+    inspector = inspect(engine)
+    schema = ""
 
-    prompt = f"""
-Return ONLY SQL.
+    for table in inspector.get_table_names():
+        schema += f"\nTable: {table}\nColumns:\n"
 
-SCHEMA:
-{schema}
+        columns = inspector.get_columns(table)
+        for col in columns:
+            schema += f"- {col['name']} ({col['type']})\n"
 
-QUESTION:
-{question}
-"""
+        # 🔥 ADD FOREIGN KEYS
+        fks = inspector.get_foreign_keys(table)
+        for fk in fks:
+            schema += f"FK: {fk['constrained_columns']} → {fk['referred_table']}.{fk['referred_columns']}\n"
 
-    res = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return clean_sql(res.choices[0].message.content)
-
+    return schema
 
 def execute_sql(engine, sql):
     try:
