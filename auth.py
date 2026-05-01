@@ -9,16 +9,13 @@ def get_conn():
 
 def init_db():
     conn = get_conn()
-    c = conn.cursor()
-
-    c.execute("""
+    conn.execute("""
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         username TEXT UNIQUE,
         password TEXT
     )
     """)
-
     conn.commit()
     conn.close()
 
@@ -30,15 +27,15 @@ def register_user(u, p):
         conn = get_conn()
         conn.execute("INSERT INTO users VALUES (NULL, ?, ?)", (u, hash_pass(p)))
         conn.commit()
-        return True, "Created"
+        return True, "Account created"
     except:
-        return False, "Exists"
+        return False, "Username exists"
 
 def login_user(u, p):
     conn = get_conn()
-    res = conn.execute(
+    user = conn.execute(
         "SELECT * FROM users WHERE username=? AND password=?",
         (u, hash_pass(p))
     ).fetchone()
 
-    return (True, res) if res else (False, "Invalid")
+    return (True, user) if user else (False, "Invalid credentials")

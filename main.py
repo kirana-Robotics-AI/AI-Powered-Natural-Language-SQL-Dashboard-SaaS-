@@ -4,11 +4,11 @@ from openai import OpenAI
 import os
 import re
 
+# ================= OPENAI =================
 api_key = os.getenv("OPENAI_API_KEY")
 client = OpenAI(api_key=api_key) if api_key else None
 
-_schema_cache = {}
-
+# ================= SCHEMA =================
 def get_schema(engine):
     inspector = inspect(engine)
     schema = ""
@@ -16,53 +16,71 @@ def get_schema(engine):
     for table in inspector.get_table_names():
         schema += f"\nTable: {table}\nColumns:\n"
 
-        columns = inspector.get_columns(table)
-        for col in columns:
+        for col in inspector.get_columns(table):
             schema += f"- {col['name']} ({col['type']})\n"
 
-        # 🔥 ADD FOREIGN KEYS
-        fks = inspector.get_foreign_keys(table)
-        for fk in fks:
-            schema += f"FK: {fk['constrained_columns']} → {fk['referred_table']}.{fk['referred_columns']}\n"
+        # Include foreign keys (helps JOIN)
+        for fk in inspector.get_foreign_keys(table):
+            schema += f"FK: {fk['constrained_columns']} -> {fk['referred_table']}.{fk['referred_columns']}\n"
 
     return schema
 
+
+# ================= CLEAN SQL =================
 def clean_sql(sql):
     if not sql:
         return None
 
     sql = sql.replace("```sql", "").replace("```", "").strip()
     match = re.search(r"(select .*?)(;|$)", sql, re.IGNORECASE | re.DOTALL)
-
     return match.group(1).strip() if match else None
 
 
+# ================= VALIDATE =================
 def validate_sql(sql):
-    return (sql.lower().startswith("select"), "Only SELECT allowed")
+    if not sql.lower().startswith("select"):
+        return False, "Only SELECT queries allowed"
+    return True, None
 
 
+# ================= LIMIT =================
 def ensure_limit(sql):
-    return sql if "limit" in sql.lower() else sql + " LIMIT 10"
+    if "limit" not in sql.lower():
+        return sql + " LIMIT 10"
+    return sql
 
 
-def get_schema(engine):
-    inspector = inspect(engine)
-    schema = ""
+# ================= GENERATE SQL =================
+def generate_sql(question, schema):
+    if not client:
+        return None
 
-    for table in inspector.get_table_names():
-        schema += f"\nTable: {table}\nColumns:\n"
+    prompt = f"""
+You are an expert SQL generator.
 
-        columns = inspector.get_columns(table)
-        for col in columns:
-            schema += f"- {col['name']} ({col['type']})\n"
+Rules:
+- Return ONLY SQL
+- No explanation
+- Must start with SELECT
+- Use JOIN when needed
+- Use schema correctly
 
-        # 🔥 ADD FOREIGN KEYS
-        fks = inspector.get_foreign_keys(table)
-        for fk in fks:
-            schema += f"FK: {fk['constrained_columns']} → {fk['referred_table']}.{fk['referred_columns']}\n"
+Schema:
+{schema}
 
-    return schema
+Question:
+{question}
+"""
 
+    res = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return clean_sql(res.choices[0].message.content)
+
+
+# ================= EXECUTE =================
 def execute_sql(engine, sql):
     try:
         with engine.connect() as conn:
@@ -73,9 +91,10 @@ def execute_sql(engine, sql):
         return None, str(e)
 
 
+# ================= MAIN =================
 def ask_db(question, engine):
     if not client:
-        return None, None, "❌ API key missing"
+        return None, None, "❌ OPENAI_API_KEY missing"
 
     schema = get_schema(engine)
     sql = generate_sql(question, schema)
@@ -88,6 +107,7 @@ def ask_db(question, engine):
         return None, sql, msg
 
     sql = ensure_limit(sql)
+
     df, err = execute_sql(engine, sql)
 
     return df, sql, err
