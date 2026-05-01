@@ -48,7 +48,10 @@ if not st.session_state.logged_in:
 
         if st.button("Create Account"):
             ok, msg = register_user(u, p)
-            st.success(msg) if ok else st.error(msg)
+            if ok:
+               st.success(msg)
+            else:
+               st.error(msg)
 
     st.stop()
 
