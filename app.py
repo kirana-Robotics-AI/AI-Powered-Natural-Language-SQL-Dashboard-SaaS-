@@ -70,12 +70,35 @@ if db_type == "MySQL":
 # ================= SAFE CSV LOADER =================
 def load_csv(file):
     try:
-        return pd.read_csv(file, encoding="utf-8")
+        file.seek(0)
+
+        # Try normal CSV
+        df = pd.read_csv(file)
+
+        if df.shape[1] == 0:
+            raise ValueError("Empty columns")
+
+        return df
+
     except:
         try:
-            return pd.read_csv(file, encoding="latin1")
+            file.seek(0)
+            # Try semicolon delimiter
+            df = pd.read_csv(file, delimiter=";")
+
+            if df.shape[1] == 0:
+                raise ValueError("Still empty")
+
+            return df
+
         except:
-            return pd.read_csv(file, encoding="ISO-8859-1")
+            try:
+                file.seek(0)
+                # Try latin encoding
+                return pd.read_csv(file, encoding="latin1")
+
+            except Exception as e:
+                raise Exception(f"Unreadable file: {str(e)}")
 
 # ================= MAIN =================
 st.title("AI SQL Dashboard")
