@@ -1,167 +1,143 @@
 import streamlit as st
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, text, inspect
 from main import ask_db
 from auth import init_db, login_user, register_user
 import plotly.express as px
 import os
 
-# ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
 init_db()
 
-# 🔥 DEBUG (optional)
-st.sidebar.write("API KEY:", bool(os.getenv("OPENAI_API_KEY")))
+# SESSION
+st.session_state.setdefault("logged_in", False)
+st.session_state.setdefault("engine", None)
+st.session_state.setdefault("df", None)
+st.session_state.setdefault("sql", None)
+st.session_state.setdefault("error", None)
 
-# ================= SESSION =================
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if "engine" not in st.session_state:
-    st.session_state.engine = None
-
-if "df" not in st.session_state:
-    st.session_state.df = None
-
-if "sql" not in st.session_state:
-    st.session_state.sql = None
-
-if "error" not in st.session_state:
-    st.session_state.error = None
-
-
-# ================= LOGIN =================
+# LOGIN
 if not st.session_state.logged_in:
     st.title("🔐 Login")
 
     tab1, tab2 = st.tabs(["Login", "Register"])
 
     with tab1:
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
+        u = st.text_input("Username")
+        p = st.text_input("Password", type="password")
 
         if st.button("Login"):
-            success, result = login_user(username, password)
-
-            if success:
+            ok, res = login_user(u, p)
+            if ok:
                 st.session_state.logged_in = True
                 st.rerun()
             else:
-                st.error(result)
+                st.error(res)
 
     with tab2:
-        new_user = st.text_input("New Username")
-        new_pass = st.text_input("New Password", type="password")
+        u = st.text_input("New Username")
+        p = st.text_input("New Password", type="password")
 
-        if st.button("Create Account"):
-            success, msg = register_user(new_user, new_pass)
-
-            if success:
-                st.success(msg)
-            else:
-                st.error(msg)
+        if st.button("Create"):
+            ok, msg = register_user(u, p)
+            st.success(msg) if ok else st.error(msg)
 
     st.stop()
 
+# SIDEBAR
+st.sidebar.title("Database")
 
-# ================= SIDEBAR =================
-st.sidebar.title("⚙️ Database Connection")
-
-db_type = st.sidebar.selectbox("DB Type", ["MySQL", "SQLite"])
+db_type = st.sidebar.selectbox("DB", ["MySQL", "SQLite"])
 
 if db_type == "MySQL":
     host = st.sidebar.text_input("Host")
+    port = st.sidebar.text_input("Port", "3306")
     user = st.sidebar.text_input("User")
     password = st.sidebar.text_input("Password", type="password")
-    db = st.sidebar.text_input("Database Name")
+    db = st.sidebar.text_input("Database")
 else:
-    sqlite_path = st.sidebar.text_input("SQLite file path")
+    path = st.sidebar.text_input("SQLite Path", "users.db")
 
-
-def connect_db():
+def connect():
     try:
         if db_type == "MySQL":
-            engine = create_engine(f"mysql+pymysql://{user}:{password}@{host}/{db}")
+            engine = create_engine(
+                f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}"
+            )
         else:
-            engine = create_engine(f"sqlite:///{sqlite_path}")
+            engine = create_engine(f"sqlite:///{path}")
 
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
+        with engine.connect() as c:
+            c.execute(text("SELECT 1"))
 
         st.session_state.engine = engine
-        st.success("✅ Connected")
+        st.success("Connected")
 
     except Exception as e:
-        st.error(f"❌ Connection failed: {str(e)}")
-
+        st.error(f"Connection failed: {e}")
 
 if st.sidebar.button("Connect"):
-    connect_db()
+    connect()
 
-if st.sidebar.button("Reset"):
-    st.session_state.engine = None
-    st.rerun()
-
-if st.sidebar.button("Logout"):
-    st.session_state.clear()
-    st.rerun()
-
-
-# ================= MAIN =================
+# MAIN
 st.title("🤖 AI SQL Dashboard")
 
-query = st.text_input("Ask your database")
+# CSV UPLOAD
+st.subheader("📂 Upload CSV")
 
+file = st.file_uploader("Upload CSV", type=["csv"])
 
-# ================= RUN QUERY =================
-if st.button("Run Query"):
+if file and st.session_state.engine:
+    df = pd.read_csv(file)
+    df.to_sql("user_data", st.session_state.engine, index=False, if_exists="replace")
+    st.success("Data uploaded")
+    st.dataframe(df.head())
 
+# SHOW TABLES
+if st.session_state.engine:
+    insp = inspect(st.session_state.engine)
+    tables = insp.get_table_names()
+
+    if tables:
+        table = st.selectbox("Preview Table", tables)
+        if table:
+            df_preview = pd.read_sql(f"SELECT * FROM {table} LIMIT 5", st.session_state.engine)
+            st.dataframe(df_preview)
+
+# QUERY
+q = st.text_input("Ask your data")
+
+if st.button("Run"):
     if not st.session_state.engine:
-        st.warning("Connect database first")
+        st.warning("Connect DB")
         st.stop()
 
-    if not query.strip():
-        st.warning("Enter a query")
-        st.stop()
-
-    with st.spinner("Running AI query..."):
-        df, sql, error = ask_db(query, st.session_state.engine)
+    df, sql, err = ask_db(q, st.session_state.engine)
 
     st.session_state.df = df
     st.session_state.sql = sql
-    st.session_state.error = error
+    st.session_state.error = err
 
-
-# ================= DISPLAY =================
+# DISPLAY
 if st.session_state.sql:
-
-    with st.expander("🧠 Generated SQL"):
-        st.code(st.session_state.sql, language="sql")
+    st.code(st.session_state.sql, language="sql")
 
     if st.session_state.error:
         st.error(st.session_state.error)
-        st.stop()
+    else:
+        df = st.session_state.df
+        st.dataframe(df)
 
-    df = st.session_state.df
+        num = df.select_dtypes(include=["int64", "float64"]).columns
+        txt = df.select_dtypes(include=["object"]).columns
 
-    if df is None or df.empty:
-        st.warning("No data found")
-        st.stop()
+        chart = st.selectbox("Chart", ["Table", "Bar", "Line", "Pie"])
 
-    st.success("✅ Query successful")
+        if chart == "Bar" and len(num) and len(txt):
+            st.plotly_chart(px.bar(df, x=txt[0], y=num[0]))
 
-    st.dataframe(df, use_container_width=True)
+        elif chart == "Line" and len(num):
+            st.plotly_chart(px.line(df, y=num[0]))
 
-    numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
-    text_cols = df.select_dtypes(include=['object']).columns.tolist()
-
-    chart_type = st.selectbox("Chart", ["Table", "Bar", "Line", "Pie"])
-
-    if chart_type == "Bar" and numeric_cols and text_cols:
-        st.plotly_chart(px.bar(df, x=text_cols[0], y=numeric_cols[0]))
-
-    elif chart_type == "Line" and numeric_cols:
-        st.plotly_chart(px.line(df, y=numeric_cols[0]))
-
-    elif chart_type == "Pie" and numeric_cols and text_cols:
-        st.plotly_chart(px.pie(df, names=text_cols[0], values=numeric_cols[0]))
+        elif chart == "Pie" and len(num) and len(txt):
+            st.plotly_chart(px.pie(df, names=txt[0], values=num[0]))

@@ -4,24 +4,14 @@ from openai import OpenAI
 import os
 import re
 
-# =========================
-# SAFE OPENAI INIT
-# =========================
+# ================= OPENAI =================
 api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=api_key) if api_key else None
 
-if api_key:
-    client = OpenAI(api_key=api_key)
-else:
-    client = None
-
-
-# =========================
-# CACHE SCHEMA
-# =========================
+# ================= SCHEMA CACHE =================
 _schema_cache = {}
 
 def get_schema(engine):
-    global _schema_cache
     engine_id = str(engine.url)
 
     if engine_id in _schema_cache:
@@ -44,16 +34,14 @@ def get_schema(engine):
         return f"Schema error: {str(e)}"
 
 
-# =========================
-# CLEAN SQL (🔥 IMPORTANT FIX)
-# =========================
+# ================= CLEAN SQL =================
 def clean_sql(sql):
     if not sql:
         return None
 
     sql = sql.replace("```sql", "").replace("```", "").strip()
 
-    # Extract only SELECT query
+    # Extract SELECT query only
     match = re.search(r"(select .*?)(;|$)", sql, re.IGNORECASE | re.DOTALL)
     if match:
         sql = match.group(1)
@@ -61,44 +49,33 @@ def clean_sql(sql):
     return sql.strip()
 
 
-# =========================
-# VALIDATE SQL (FIXED)
-# =========================
+# ================= VALIDATE SQL =================
 def validate_sql(sql):
-    sql_lower = sql.lower()
-
-    if "select" not in sql_lower:
+    if not sql.lower().strip().startswith("select"):
         return False, "Only SELECT queries allowed"
-
     return True, None
 
 
-# =========================
-# ENSURE LIMIT
-# =========================
+# ================= ENSURE LIMIT =================
 def ensure_limit(sql):
     if "limit" not in sql.lower():
         return sql + " LIMIT 10"
     return sql
 
 
-# =========================
-# GENERATE SQL (🔥 FIXED PROMPT)
-# =========================
+# ================= GENERATE SQL =================
 def generate_sql(question, schema):
-
     if not client:
         return None
 
     prompt = f"""
-You are a SQL generator.
+You are an expert SQL generator.
 
 STRICT RULES:
 - Return ONLY SQL
-- No explanation
-- No markdown
 - Must start with SELECT
-- Use only given schema
+- No explanation
+- Use only tables in schema
 
 SCHEMA:
 {schema}
@@ -111,7 +88,7 @@ QUESTION:
         res = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "Return ONLY SQL query."},
+                {"role": "system", "content": "Return ONLY SQL."},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -123,9 +100,7 @@ QUESTION:
         return None
 
 
-# =========================
-# EXECUTE SQL
-# =========================
+# ================= EXECUTE SQL =================
 def execute_sql(engine, sql):
     try:
         with engine.connect() as conn:
@@ -140,18 +115,15 @@ def execute_sql(engine, sql):
         return None, str(e)
 
 
-# =========================
-# MAIN PIPELINE
-# =========================
+# ================= MAIN =================
 def ask_db(question, engine):
 
     if not client:
-        return None, None, "❌ OPENAI_API_KEY not set in Railway"
+        return None, None, "❌ OPENAI_API_KEY not set"
 
     schema = get_schema(engine)
 
     sql = generate_sql(question, schema)
-
     if not sql:
         return None, None, "❌ Failed to generate SQL"
 
