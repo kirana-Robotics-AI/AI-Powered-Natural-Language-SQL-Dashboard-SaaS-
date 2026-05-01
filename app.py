@@ -4,74 +4,99 @@ from sqlalchemy import create_engine, text, inspect
 from main import ask_db
 from auth import init_db, login_user, register_user
 import plotly.express as px
+import chardet
 
+# ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
+
+# Init auth DB
 init_db()
 
-# SESSION
+# ================= SESSION =================
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("engine", None)
 
-# AUTO SQLITE (🔥 NO DB REQUIRED)
+# ================= AUTO SQLITE (NO DB NEEDED) =================
 if st.session_state.engine is None:
     st.session_state.engine = create_engine("sqlite:///auto.db")
 
-# LOGIN
+# ================= LOGIN =================
 if not st.session_state.logged_in:
-    st.title("Login")
+    st.title("🔐 Login")
 
-    t1, t2 = st.tabs(["Login", "Register"])
+    tab1, tab2 = st.tabs(["Login", "Register"])
 
-    with t1:
-        u = st.text_input("User")
-        p = st.text_input("Pass", type="password")
+    with tab1:
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
 
         if st.button("Login"):
-            ok, msg = login_user(u, p)
-            if ok:
+            success, result = login_user(username, password)
+            if success:
                 st.session_state.logged_in = True
                 st.rerun()
             else:
+                st.error(result)
+
+    with tab2:
+        new_user = st.text_input("New Username")
+        new_pass = st.text_input("New Password", type="password")
+
+        if st.button("Create Account"):
+            success, msg = register_user(new_user, new_pass)
+            if success:
+                st.success(msg)
+            else:
                 st.error(msg)
-
-    with t2:
-        u = st.text_input("New User")
-        p = st.text_input("New Pass", type="password")
-
-        if st.button("Create"):
-            ok, msg = register_user(u, p)
-            st.success(msg) if ok else st.error(msg)
 
     st.stop()
 
-# SIDEBAR DB
-st.sidebar.title("Database")
+# ================= SIDEBAR =================
+st.sidebar.title("⚙️ Database Connection")
 
-db_type = st.sidebar.selectbox("DB", ["Auto SQLite", "MySQL"])
+db_type = st.sidebar.selectbox("DB Type", ["Auto SQLite", "MySQL"])
 
 if db_type == "MySQL":
     host = st.sidebar.text_input("Host")
     port = st.sidebar.text_input("Port", "3306")
     user = st.sidebar.text_input("User")
     password = st.sidebar.text_input("Password", type="password")
-    db = st.sidebar.text_input("DB")
+    db = st.sidebar.text_input("Database")
 
     if st.sidebar.button("Connect MySQL"):
         try:
             engine = create_engine(
-                f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}"
+                f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}",
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": 5}
             )
-            engine.connect()
+
+            # Test connection
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+
             st.session_state.engine = engine
-            st.success("Connected")
+            st.success("✅ Connected to MySQL")
+
         except Exception as e:
-            st.error(e)
+            st.error(f"❌ Connection failed: {e}")
 
-# MAIN
-st.title("AI SQL Dashboard")
+# ================= SAFE CSV LOADER =================
+def load_csv(file):
+    try:
+        raw = file.read()
+        encoding = chardet.detect(raw)["encoding"]
+        file.seek(0)
+        return pd.read_csv(file, encoding=encoding)
+    except:
+        file.seek(0)
+        return pd.read_csv(file, encoding="latin1")
 
-# MULTI CSV UPLOAD
-st.subheader("Upload CSV")
+# ================= MAIN =================
+st.title("🤖 AI SQL Dashboard")
+
+# ================= CSV UPLOAD =================
+st.subheader("📂 Upload CSV Files")
 
 files = st.file_uploader(
     "Upload CSV files",
@@ -81,46 +106,84 @@ files = st.file_uploader(
 
 if files:
     for f in files:
-        df = pd.read_csv(f)
-        name = f.name.replace(".csv", "").lower()
+        try:
+            df = load_csv(f)
 
-        df.to_sql(name, st.session_state.engine, index=False, if_exists="replace")
-        st.success(f"{name} uploaded")
+            table_name = f.name.replace(".csv", "").replace(" ", "_").lower()
 
-# SHOW TABLES
-insp = inspect(st.session_state.engine)
-tables = insp.get_table_names()
+            df.to_sql(
+                table_name,
+                st.session_state.engine,
+                index=False,
+                if_exists="replace"
+            )
+
+            st.success(f"✅ {table_name} uploaded")
+
+        except Exception as e:
+            st.error(f"❌ {f.name} failed: {str(e)}")
+
+# ================= SHOW TABLES =================
+inspector = inspect(st.session_state.engine)
+tables = inspector.get_table_names()
 
 if tables:
-    table = st.selectbox("Preview", tables)
+    st.subheader("📊 Table Preview")
 
-    if table:
-        df = pd.read_sql(f"SELECT * FROM {table} LIMIT 5", st.session_state.engine)
-        st.dataframe(df)
+    selected_table = st.selectbox("Select Table", tables)
 
-# QUERY
-q = st.text_input("Ask your data")
+    if selected_table:
+        df_preview = pd.read_sql(
+            f"SELECT * FROM {selected_table} LIMIT 5",
+            st.session_state.engine
+        )
+        st.dataframe(df_preview)
 
-if st.button("Run"):
-    df, sql, err = ask_db(q, st.session_state.engine)
+# ================= QUERY =================
+st.subheader("💬 Ask Your Data")
 
-    st.code(sql or "No SQL")
+query = st.text_input("Type your question")
 
-    if err:
-        st.error(err)
+if st.button("Run Query"):
+
+    if not query.strip():
+        st.warning("Please enter a question")
+        st.stop()
+
+    with st.spinner("Generating SQL & fetching data..."):
+        df, sql, error = ask_db(query, st.session_state.engine)
+
+    if sql:
+        with st.expander("🧠 Generated SQL"):
+            st.code(sql, language="sql")
+
+    if error:
+        st.error(error)
     else:
-        st.dataframe(df)
+        if df is None or df.empty:
+            st.warning("No data found")
+        else:
+            st.success("✅ Query executed")
 
-        num = df.select_dtypes(include=["int64", "float64"]).columns
-        txt = df.select_dtypes(include=["object"]).columns
+            st.dataframe(df, use_container_width=True)
 
-        chart = st.selectbox("Chart", ["Table", "Bar", "Line", "Pie"])
+            # ================= CHARTS =================
+            numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
+            text_cols = df.select_dtypes(include=['object']).columns.tolist()
 
-        if chart == "Bar" and len(num) and len(txt):
-            st.plotly_chart(px.bar(df, x=txt[0], y=num[0]))
+            chart_type = st.selectbox(
+                "📈 Choose Chart",
+                ["Table", "Bar", "Line", "Pie"]
+            )
 
-        elif chart == "Line" and len(num):
-            st.plotly_chart(px.line(df, y=num[0]))
+            if chart_type == "Bar" and numeric_cols and text_cols:
+                fig = px.bar(df, x=text_cols[0], y=numeric_cols[0])
+                st.plotly_chart(fig, use_container_width=True)
 
-        elif chart == "Pie" and len(num) and len(txt):
-            st.plotly_chart(px.pie(df, names=txt[0], values=num[0]))
+            elif chart_type == "Line" and numeric_cols:
+                fig = px.line(df, y=numeric_cols[0])
+                st.plotly_chart(fig, use_container_width=True)
+
+            elif chart_type == "Pie" and numeric_cols and text_cols:
+                fig = px.pie(df, names=text_cols[0], values=numeric_cols[0])
+                st.plotly_chart(fig, use_container_width=True)
