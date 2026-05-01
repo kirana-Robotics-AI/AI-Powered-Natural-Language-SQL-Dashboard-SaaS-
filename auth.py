@@ -4,11 +4,11 @@ import os
 
 DB_FILE = os.path.join(os.getcwd(), "users.db")
 
-def get_connection():
+def get_conn():
     return sqlite3.connect(DB_FILE, check_same_thread=False)
 
 def init_db():
-    conn = get_connection()
+    conn = get_conn()
     c = conn.cursor()
 
     c.execute("""
@@ -22,37 +22,23 @@ def init_db():
     conn.commit()
     conn.close()
 
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
+def hash_pass(p):
+    return hashlib.sha256(p.encode()).hexdigest()
 
-def register_user(username, password):
+def register_user(u, p):
     try:
-        conn = get_connection()
-        c = conn.cursor()
-
-        c.execute(
-            "INSERT INTO users (username, password) VALUES (?, ?)",
-            (username, hash_password(password))
-        )
-
+        conn = get_conn()
+        conn.execute("INSERT INTO users VALUES (NULL, ?, ?)", (u, hash_pass(p)))
         conn.commit()
-        conn.close()
+        return True, "Created"
+    except:
+        return False, "Exists"
 
-        return True, "Account created"
-
-    except sqlite3.IntegrityError:
-        return False, "Username exists"
-
-def login_user(username, password):
-    conn = get_connection()
-    c = conn.cursor()
-
-    c.execute(
+def login_user(u, p):
+    conn = get_conn()
+    res = conn.execute(
         "SELECT * FROM users WHERE username=? AND password=?",
-        (username, hash_password(password))
-    )
+        (u, hash_pass(p))
+    ).fetchone()
 
-    user = c.fetchone()
-    conn.close()
-
-    return (True, user) if user else (False, "Invalid login")
+    return (True, res) if res else (False, "Invalid")
