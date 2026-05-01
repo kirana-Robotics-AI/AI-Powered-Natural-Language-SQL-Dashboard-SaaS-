@@ -18,6 +18,7 @@ def get_connection():
 # =========================
 def init_db():
     try:
+        
         conn = get_connection()
         c = conn.cursor()
 
