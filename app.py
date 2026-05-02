@@ -4,7 +4,6 @@ from sqlalchemy import create_engine, text, inspect
 from main import ask_db
 from auth import init_db, login_user, register_user
 import plotly.express as px
-import os
 
 # ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
@@ -13,7 +12,6 @@ init_db()
 # ================= SESSION =================
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("engine", None)
-st.session_state.setdefault("db_type", "SQLite")
 st.session_state.setdefault("uploaded_files", set())
 st.session_state.setdefault("uploader_key", 0)
 
@@ -61,8 +59,6 @@ db_type = st.sidebar.selectbox("DB Type", ["SQLite", "MySQL"])
 
 # ================= SQLITE =================
 if db_type == "SQLite":
-    st.session_state.db_type = "sqlite"
-
     if st.session_state.engine is None:
         db_name = f"user_{st.session_state.username}.db"
         st.session_state.engine = create_engine(f"sqlite:///{db_name}")
@@ -71,8 +67,6 @@ if db_type == "SQLite":
 
 # ================= MYSQL =================
 else:
-    st.session_state.db_type = "mysql"
-
     host = st.sidebar.text_input("Host")
     port = st.sidebar.text_input("Port", "3306")
     user = st.sidebar.text_input("User")
@@ -90,7 +84,7 @@ else:
                 conn.execute(text("SELECT 1"))
 
             st.session_state.engine = engine
-            st.success("✅ Connected to MySQL")
+            st.success("✅ Connected")
 
         except Exception as e:
             st.error(f"❌ {e}")
@@ -104,8 +98,7 @@ if st.sidebar.button("🚪 Logout"):
 def load_csv(file):
     try:
         file.seek(0)
-        df = pd.read_csv(file)
-        return df
+        return pd.read_csv(file)
     except:
         try:
             file.seek(0)
@@ -117,6 +110,9 @@ def load_csv(file):
 # ================= MAIN =================
 st.title("🤖 AI SQL Dashboard")
 
+# ================= OVERWRITE =================
+overwrite = st.checkbox("🔁 Overwrite existing tables", value=True)
+
 # ================= UPLOADER =================
 files = st.file_uploader(
     "📂 Upload CSV",
@@ -125,22 +121,46 @@ files = st.file_uploader(
     key=f"uploader_{st.session_state.uploader_key}"
 )
 
+# ================= PROCESS UPLOAD =================
 if files:
+    inspector = inspect(st.session_state.engine)
+    existing_tables = inspector.get_table_names()
+
     for f in files:
-        if f.name in st.session_state.uploaded_files:
-            continue
+        table = f.name.replace(".csv", "").lower()
 
         try:
-            df = load_csv(f)
-            table = f.name.replace(".csv", "").lower()
+            df_preview = load_csv(f)
 
-            df.to_sql(table, st.session_state.engine, index=False, if_exists="replace")
-
-            st.session_state.uploaded_files.add(f.name)
-            st.success(f"✅ {table} uploaded")
+            st.markdown(f"### 📄 Preview: {table}")
+            st.dataframe(df_preview.head())
+            st.write(f"Rows: {df_preview.shape[0]}, Columns: {df_preview.shape[1]}")
 
         except Exception as e:
-            st.error(f"{f.name} failed: {e}")
+            st.error(f"Preview failed: {e}")
+            continue
+
+        if table in existing_tables and not overwrite:
+            st.warning(f"{table} exists (overwrite OFF)")
+            continue
+
+        if st.button(f"Upload {table}", key=f"upload_{table}"):
+
+            try:
+                df_preview.to_sql(
+                    table,
+                    st.session_state.engine,
+                    index=False,
+                    if_exists="replace" if overwrite else "fail"
+                )
+
+                st.session_state.uploaded_files.add(table)
+
+                st.success(f"✅ {table} uploaded")
+                st.rerun()
+
+            except Exception as e:
+                st.error(f"❌ {e}")
 
 # ================= DATASET MANAGER =================
 st.subheader("🗂️ Manage Tables")
@@ -158,9 +178,10 @@ if tables:
         with col2:
             if st.button("Delete", key=f"del_{table}"):
                 try:
-                    # 🔥 FIXED DELETE
                     with st.session_state.engine.begin() as conn:
                         conn.execute(text(f"DROP TABLE `{table}`"))
+
+                    st.session_state.uploaded_files.discard(table)
 
                     st.success(f"{table} deleted")
                     st.rerun()
@@ -168,15 +189,15 @@ if tables:
                 except Exception as e:
                     st.error(f"❌ {e}")
 else:
-    st.info("No tables found")
+    st.info("No tables")
 
 # ================= PREVIEW =================
 if tables:
-    table = st.selectbox("Preview Table", tables)
+    selected = st.selectbox("Preview Table", tables)
 
-    if table:
+    if selected:
         df_preview = pd.read_sql(
-            f"SELECT * FROM {table} LIMIT 5",
+            f"SELECT * FROM {selected} LIMIT 5",
             st.session_state.engine
         )
         st.dataframe(df_preview)
