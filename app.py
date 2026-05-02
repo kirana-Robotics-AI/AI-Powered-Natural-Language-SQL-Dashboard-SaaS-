@@ -121,7 +121,7 @@ files = st.file_uploader(
     key=f"uploader_{st.session_state.uploader_key}"
 )
 
-# ================= PROCESS UPLOAD =================
+# ================= UPLOAD PROCESS =================
 if files:
     inspector = inspect(st.session_state.engine)
     existing_tables = inspector.get_table_names()
@@ -133,8 +133,7 @@ if files:
             df_preview = load_csv(f)
 
             st.markdown(f"### 📄 Preview: {table}")
-            st.dataframe(df_preview.head())
-            st.write(f"Rows: {df_preview.shape[0]}, Columns: {df_preview.shape[1]}")
+            st.dataframe(df_preview.head(), height=200, use_container_width=True)
 
         except Exception as e:
             st.error(f"Preview failed: {e}")
@@ -188,22 +187,29 @@ if tables:
 
                 except Exception as e:
                     st.error(f"❌ {e}")
-else:
-    st.info("No tables")
 
-# ================= PREVIEW =================
+# ================= CLEAN PREVIEW GRID =================
+st.subheader("📊 Table Previews")
+
 if tables:
-    selected = st.selectbox("Preview Table", tables)
+    cols = st.columns(2)
 
-    if selected:
-        df_preview = pd.read_sql(
-            f"SELECT * FROM {selected} LIMIT 5",
-            st.session_state.engine
-        )
-        st.dataframe(df_preview)
+    for i, table in enumerate(tables):
+        with cols[i % 2]:
+            with st.expander(f"📄 {table}"):
+
+                df_preview = pd.read_sql(
+                    f"SELECT * FROM {table} LIMIT 5",
+                    st.session_state.engine
+                )
+
+                st.dataframe(df_preview, height=250, use_container_width=True)
+                st.caption(f"Rows: {df_preview.shape[0]}, Columns: {df_preview.shape[1]}")
 
 # ================= QUERY =================
-query = st.text_input("Ask your database")
+st.subheader("💬 Ask your data")
+
+query = st.text_input("Type your question")
 
 if st.button("Run Query"):
     df, sql, error = ask_db(query, st.session_state.engine)
@@ -214,7 +220,9 @@ if st.button("Run Query"):
 
 # ================= DISPLAY =================
 if st.session_state.sql:
-    st.code(st.session_state.sql)
+
+    with st.expander("🧠 Generated SQL"):
+        st.code(st.session_state.sql)
 
     if st.session_state.error:
         st.error(st.session_state.error)
@@ -222,13 +230,13 @@ if st.session_state.sql:
         df = st.session_state.df
 
         if df is not None:
-            st.dataframe(df)
+            st.dataframe(df, use_container_width=True)
 
             num = df.select_dtypes(include=['int64','float64']).columns
             txt = df.select_dtypes(include=['object']).columns
 
             chart = st.selectbox(
-                "Chart",
+                "📈 Chart",
                 ["Table","Bar","Line","Pie"],
                 key="chart_type"
             )
