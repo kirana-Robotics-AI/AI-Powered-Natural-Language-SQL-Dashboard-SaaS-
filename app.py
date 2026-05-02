@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, text, inspect
 from main import ask_db
 from auth import init_db, login_user, register_user
 import plotly.express as px
+import os
 
 # ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
@@ -12,6 +13,7 @@ init_db()
 # ================= SESSION =================
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("engine", None)
+st.session_state.setdefault("db_type", "SQLite")
 st.session_state.setdefault("uploaded_files", set())
 st.session_state.setdefault("uploader_key", 0)
 
@@ -52,14 +54,48 @@ if not st.session_state.logged_in:
 
     st.stop()
 
-# ================= USER DATABASE =================
-if st.session_state.engine is None:
-    db_name = f"user_{st.session_state.username}.db"
-    st.session_state.engine = create_engine(f"sqlite:///{db_name}")
-
 # ================= SIDEBAR =================
-st.sidebar.title("⚙️ Options")
+st.sidebar.title("⚙️ Database")
 
+db_type = st.sidebar.selectbox("DB Type", ["SQLite", "MySQL"])
+
+# ================= SQLITE =================
+if db_type == "SQLite":
+    st.session_state.db_type = "sqlite"
+
+    if st.session_state.engine is None:
+        db_name = f"user_{st.session_state.username}.db"
+        st.session_state.engine = create_engine(f"sqlite:///{db_name}")
+
+    st.sidebar.success("Using SQLite")
+
+# ================= MYSQL =================
+else:
+    st.session_state.db_type = "mysql"
+
+    host = st.sidebar.text_input("Host")
+    port = st.sidebar.text_input("Port", "3306")
+    user = st.sidebar.text_input("User")
+    password = st.sidebar.text_input("Password", type="password")
+    db = st.sidebar.text_input("Database")
+
+    if st.sidebar.button("Connect MySQL"):
+        try:
+            engine = create_engine(
+                f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}",
+                pool_pre_ping=True
+            )
+
+            with engine.connect() as conn:
+                conn.execute(text("SELECT 1"))
+
+            st.session_state.engine = engine
+            st.success("✅ Connected to MySQL")
+
+        except Exception as e:
+            st.error(f"❌ {e}")
+
+# ================= LOGOUT =================
 if st.sidebar.button("🚪 Logout"):
     st.session_state.clear()
     st.rerun()
@@ -69,8 +105,6 @@ def load_csv(file):
     try:
         file.seek(0)
         df = pd.read_csv(file)
-        if df.shape[1] == 0:
-            raise ValueError("Empty columns")
         return df
     except:
         try:
@@ -83,21 +117,14 @@ def load_csv(file):
 # ================= MAIN =================
 st.title("🤖 AI SQL Dashboard")
 
-# ================= CLEAR =================
-if st.button("🧹 Clear Uploaded Files UI"):
-    st.session_state.uploaded_files.clear()
-    st.session_state.uploader_key += 1
-    st.rerun()
-
 # ================= UPLOADER =================
 files = st.file_uploader(
-    "📂 Upload CSV Files",
+    "📂 Upload CSV",
     type=["csv"],
     accept_multiple_files=True,
     key=f"uploader_{st.session_state.uploader_key}"
 )
 
-# ================= PROCESS UPLOAD =================
 if files:
     for f in files:
         if f.name in st.session_state.uploaded_files:
@@ -105,19 +132,9 @@ if files:
 
         try:
             df = load_csv(f)
+            table = f.name.replace(".csv", "").lower()
 
-            if df.empty:
-                st.error(f"{f.name} is empty")
-                continue
-
-            table = f.name.replace(".csv", "").replace(" ", "_").lower()
-
-            df.to_sql(
-                table,
-                st.session_state.engine,
-                index=False,
-                if_exists="replace"
-            )
+            df.to_sql(table, st.session_state.engine, index=False, if_exists="replace")
 
             st.session_state.uploaded_files.add(f.name)
             st.success(f"✅ {table} uploaded")
@@ -141,17 +158,11 @@ if tables:
         with col2:
             if st.button("Delete", key=f"del_{table}"):
                 try:
-                    with st.session_state.engine.connect() as conn:
-                        conn.execute(text(f"DROP TABLE {table}"))
+                    # 🔥 FIXED DELETE
+                    with st.session_state.engine.begin() as conn:
+                        conn.execute(text(f"DROP TABLE `{table}`"))
 
-                    st.success(f"✅ {table} deleted")
-
-                    # Remove from uploaded tracking
-                    st.session_state.uploaded_files = {
-                        f for f in st.session_state.uploaded_files
-                        if not f.startswith(table)
-                    }
-
+                    st.success(f"{table} deleted")
                     st.rerun()
 
                 except Exception as e:
@@ -159,29 +170,21 @@ if tables:
 else:
     st.info("No tables found")
 
-# ================= TABLE PREVIEW =================
+# ================= PREVIEW =================
 if tables:
-    st.subheader("📊 Preview Table")
+    table = st.selectbox("Preview Table", tables)
 
-    selected_table = st.selectbox("Select table", tables)
-
-    if selected_table:
+    if table:
         df_preview = pd.read_sql(
-            f"SELECT * FROM {selected_table} LIMIT 5",
+            f"SELECT * FROM {table} LIMIT 5",
             st.session_state.engine
         )
         st.dataframe(df_preview)
 
 # ================= QUERY =================
-st.subheader("💬 Ask your data")
-
-query = st.text_input("Type your question")
+query = st.text_input("Ask your database")
 
 if st.button("Run Query"):
-    if not query.strip():
-        st.warning("Enter a query")
-        st.stop()
-
     df, sql, error = ask_db(query, st.session_state.engine)
 
     st.session_state.df = df
@@ -190,27 +193,22 @@ if st.button("Run Query"):
 
 # ================= DISPLAY =================
 if st.session_state.sql:
-
-    with st.expander("🧠 Generated SQL"):
-        st.code(st.session_state.sql)
+    st.code(st.session_state.sql)
 
     if st.session_state.error:
         st.error(st.session_state.error)
     else:
         df = st.session_state.df
 
-        if df is None or df.empty:
-            st.warning("No data")
-        else:
-            st.success("✅ Query executed")
+        if df is not None:
             st.dataframe(df)
 
-            num = df.select_dtypes(include=['int64', 'float64']).columns
+            num = df.select_dtypes(include=['int64','float64']).columns
             txt = df.select_dtypes(include=['object']).columns
 
             chart = st.selectbox(
-                "📈 Chart Type",
-                ["Table", "Bar", "Line", "Pie"],
+                "Chart",
+                ["Table","Bar","Line","Pie"],
                 key="chart_type"
             )
 
