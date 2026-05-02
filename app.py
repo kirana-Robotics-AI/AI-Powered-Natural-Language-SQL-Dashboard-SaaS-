@@ -14,11 +14,14 @@ st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("engine", None)
 st.session_state.setdefault("uploaded_files", set())
 
-# 🔥 NEW (IMPORTANT FIXES)
+# 🔥 Fixes for rerun + charts
 st.session_state.setdefault("df", None)
 st.session_state.setdefault("sql", None)
 st.session_state.setdefault("error", None)
 st.session_state.setdefault("chart_type", "Table")
+
+# 🔥 NEW: uploader reset key
+st.session_state.setdefault("uploader_key", 0)
 
 # AUTO SQLITE
 if st.session_state.engine is None:
@@ -49,9 +52,9 @@ if not st.session_state.logged_in:
         if st.button("Create Account"):
             ok, msg = register_user(u, p)
             if ok:
-               st.success(msg)
+                st.success(msg)
             else:
-               st.error(msg)
+                st.error(msg)
 
     st.stop()
 
@@ -71,15 +74,14 @@ if db_type == "MySQL":
         try:
             engine = create_engine(
                 f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}",
-                pool_pre_ping=True
+                pool_pre_ping=True,
+                connect_args={"connect_timeout": 5}
             )
-
             with engine.connect() as conn:
                 conn.execute(text("SELECT 1"))
 
             st.session_state.engine = engine
             st.success("✅ Connected to MySQL")
-
         except Exception as e:
             st.error(f"❌ Connection failed: {e}")
 
@@ -88,12 +90,9 @@ def load_csv(file):
     try:
         file.seek(0)
         df = pd.read_csv(file)
-
         if df.shape[1] == 0:
             raise ValueError("Empty columns")
-
         return df
-
     except:
         try:
             file.seek(0)
@@ -105,22 +104,28 @@ def load_csv(file):
 # ================= MAIN =================
 st.title("🤖 AI SQL Dashboard")
 
-# ================= CLEAR =================
+# ================= CLEAR (FIXED) =================
 if st.button("🧹 Clear Uploaded Files"):
     st.session_state.uploaded_files.clear()
-    st.success("Cleared uploads")
+    st.session_state.uploader_key += 1  # 🔥 reset uploader widget
+    st.success("Uploads cleared")
     st.rerun()
 
-# ================= CSV UPLOAD =================
+# ================= UPLOADER (FIXED KEY) =================
 files = st.file_uploader(
-    "📂 Upload CSV",
+    "📂 Upload CSV Files",
     type=["csv"],
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    key=f"uploader_{st.session_state.uploader_key}"  # 🔥 important
 )
 
+# Show already uploaded
+if st.session_state.uploaded_files:
+    st.info(f"Uploaded tables: {list(st.session_state.uploaded_files)}")
+
+# ================= PROCESS UPLOAD =================
 if files:
     for f in files:
-
         if f.name in st.session_state.uploaded_files:
             continue
 
@@ -128,57 +133,55 @@ if files:
             df = load_csv(f)
 
             if df.empty:
-                st.error(f"{f.name} empty")
+                st.error(f"❌ {f.name} is empty")
                 continue
 
-            table = f.name.replace(".csv", "").lower()
+            table_name = f.name.replace(".csv", "").replace(" ", "_").lower()
 
             df.to_sql(
-                table,
+                table_name,
                 st.session_state.engine,
                 index=False,
                 if_exists="replace"
             )
 
             st.session_state.uploaded_files.add(f.name)
-            st.success(f"{table} uploaded")
+            st.success(f"✅ {table_name} uploaded")
 
         except Exception as e:
-            st.error(f"{f.name} failed: {e}")
+            st.error(f"❌ {f.name} failed: {str(e)}")
 
 # ================= TABLE PREVIEW =================
 inspector = inspect(st.session_state.engine)
 tables = inspector.get_table_names()
 
 if tables:
-    table = st.selectbox("Preview Table", tables)
+    st.subheader("📊 Preview Table")
+    selected_table = st.selectbox("Select table", tables)
 
-    if table:
+    if selected_table:
         df_preview = pd.read_sql(
-            f"SELECT * FROM {table} LIMIT 5",
+            f"SELECT * FROM {selected_table} LIMIT 5",
             st.session_state.engine
         )
         st.dataframe(df_preview)
 
 # ================= QUERY =================
 st.subheader("💬 Ask your data")
-
-query = st.text_input("Enter question")
+query = st.text_input("Type your question")
 
 if st.button("Run Query"):
-
     if not query.strip():
-        st.warning("Enter query")
+        st.warning("Enter a query")
         st.stop()
 
     df, sql, error = ask_db(query, st.session_state.engine)
 
-    # 🔥 STORE RESULT (IMPORTANT)
     st.session_state.df = df
     st.session_state.sql = sql
     st.session_state.error = error
 
-# ================= DISPLAY (OUTSIDE BUTTON) =================
+# ================= DISPLAY =================
 if st.session_state.sql:
 
     with st.expander("🧠 Generated SQL"):
@@ -193,17 +196,15 @@ if st.session_state.sql:
             st.warning("No data")
         else:
             st.success("✅ Query executed")
+            st.dataframe(df, use_container_width=True)
 
-            st.dataframe(df)
-
-            # ================= CHART FIX =================
             numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns.tolist()
             text_cols = df.select_dtypes(include=['object']).columns.tolist()
 
             chart = st.selectbox(
                 "📈 Chart Type",
                 ["Table", "Bar", "Line", "Pie"],
-                key="chart_type"  # 🔥 FIX
+                key="chart_type"
             )
 
             if chart == "Bar" and numeric_cols and text_cols:
