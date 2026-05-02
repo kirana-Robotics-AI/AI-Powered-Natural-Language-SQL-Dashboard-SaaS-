@@ -83,30 +83,48 @@ if st.sidebar.button("Logout"):
     st.session_state.clear()
     st.rerun()
 
+# ================= SAFE CSV LOADER =================
+def load_csv(file):
+    encodings = ["utf-8", "latin1", "cp1252"]
+
+    for enc in encodings:
+        try:
+            file.seek(0)
+            return pd.read_csv(file, encoding=enc)
+        except:
+            continue
+
+    raise ValueError("Unable to read CSV file (encoding issue)")
+
 # ================= MAIN =================
 st.title("🤖 AI SQL Dashboard")
 
 # ================= UPLOAD =================
 st.subheader("📂 Upload CSV")
 
-files = st.file_uploader("Upload", type=["csv"], accept_multiple_files=True)
+files = st.file_uploader("Upload CSV files", type=["csv"], accept_multiple_files=True)
 
 if files:
     for f in files:
+        table = f.name.replace(".csv", "").lower()
+
         try:
-            df = pd.read_csv(f)
-            table = f.name.replace(".csv", "").lower()
+            df = load_csv(f)
 
             with st.expander(f"Preview: {table}"):
                 st.dataframe(df.head(), use_container_width=True)
 
             if st.button(f"Upload {table}", key=table):
                 df.to_sql(table, st.session_state.engine, index=False, if_exists="replace")
+
+                # 🔥 refresh connection
+                st.session_state.engine.dispose()
+
                 st.success(f"{table} uploaded")
                 st.rerun()
 
         except Exception as e:
-            st.error(e)
+            st.error(f"{f.name} error: {e}")
 
 # ================= TABLE MANAGER =================
 st.subheader("🗂️ Tables")
@@ -119,33 +137,37 @@ if tables:
 
     for i, table in enumerate(tables):
         with cols[i % 2]:
-            with st.container():
-                st.markdown(f"**📄 {table}**")
+            st.markdown(f"**📄 {table}**")
 
-                if st.button("Delete", key=f"del_{table}"):
-                    try:
-                        with st.session_state.engine.begin() as conn:
-                            conn.execute(text(f"DROP TABLE `{table}`"))
-                        st.success(f"{table} deleted")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(e)
+            if st.button("Delete", key=f"del_{table}"):
+                try:
+                    with st.session_state.engine.begin() as conn:
+                        conn.execute(text(f"DROP TABLE `{table}`"))
 
-                df_preview = pd.read_sql(
-                    f"SELECT * FROM {table} LIMIT 5",
-                    st.session_state.engine
-                )
+                    # 🔥 refresh
+                    st.session_state.engine.dispose()
 
-                st.dataframe(df_preview, height=200, use_container_width=True)
+                    st.success(f"{table} deleted")
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(e)
+
+            df_preview = pd.read_sql(
+                f"SELECT * FROM {table} LIMIT 5",
+                st.session_state.engine
+            )
+
+            st.dataframe(df_preview, height=200, use_container_width=True)
 
 # ================= QUERY =================
 st.subheader("💬 Ask your data")
 
-query = st.text_input("Type question")
+query = st.text_input("Type your question")
 
 if st.button("Run Query"):
     if not query:
-        st.warning("Enter query")
+        st.warning("Enter a query")
     else:
         df, sql, error = ask_db(query, st.session_state.engine)
         st.session_state.df = df
