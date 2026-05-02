@@ -4,6 +4,7 @@ from sqlalchemy import create_engine, text, inspect
 from main import ask_db
 from auth import init_db, login_user, register_user
 import plotly.express as px
+import os
 
 # ================= CONFIG =================
 st.set_page_config(page_title="AI SQL SaaS", layout="wide")
@@ -13,19 +14,13 @@ init_db()
 st.session_state.setdefault("logged_in", False)
 st.session_state.setdefault("engine", None)
 st.session_state.setdefault("uploaded_files", set())
+st.session_state.setdefault("uploader_key", 0)
 
-# 🔥 Fixes for rerun + charts
+# Query state
 st.session_state.setdefault("df", None)
 st.session_state.setdefault("sql", None)
 st.session_state.setdefault("error", None)
 st.session_state.setdefault("chart_type", "Table")
-
-# 🔥 NEW: uploader reset key
-st.session_state.setdefault("uploader_key", 0)
-
-# AUTO SQLITE
-if st.session_state.engine is None:
-    st.session_state.engine = create_engine("sqlite:///auto.db")
 
 # ================= LOGIN =================
 if not st.session_state.logged_in:
@@ -41,6 +36,7 @@ if not st.session_state.logged_in:
             ok, msg = login_user(u, p)
             if ok:
                 st.session_state.logged_in = True
+                st.session_state.username = u  # 🔥 IMPORTANT
                 st.rerun()
             else:
                 st.error(msg)
@@ -58,32 +54,27 @@ if not st.session_state.logged_in:
 
     st.stop()
 
+# ================= USER DATABASE =================
+if st.session_state.engine is None:
+    username = st.session_state.get("username")
+
+    db_name = f"user_{username}.db"
+    st.session_state.db_path = db_name
+
+    st.session_state.engine = create_engine(f"sqlite:///{db_name}")
+
 # ================= SIDEBAR =================
-st.sidebar.title("⚙️ Database")
+st.sidebar.title("⚙️ Options")
 
-db_type = st.sidebar.selectbox("DB Type", ["Auto SQLite", "MySQL"])
+if st.sidebar.button("🚪 Logout"):
 
-if db_type == "MySQL":
-    host = st.sidebar.text_input("Host")
-    port = st.sidebar.text_input("Port", "3306")
-    user = st.sidebar.text_input("User")
-    password = st.sidebar.text_input("Password", type="password")
-    db = st.sidebar.text_input("Database")
+    # 🔥 DELETE USER DATABASE
+    db_path = st.session_state.get("db_path")
+    if db_path and os.path.exists(db_path):
+        os.remove(db_path)
 
-    if st.sidebar.button("Connect MySQL"):
-        try:
-            engine = create_engine(
-                f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}",
-                pool_pre_ping=True,
-                connect_args={"connect_timeout": 5}
-            )
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-
-            st.session_state.engine = engine
-            st.success("✅ Connected to MySQL")
-        except Exception as e:
-            st.error(f"❌ Connection failed: {e}")
+    st.session_state.clear()
+    st.rerun()
 
 # ================= CSV LOADER =================
 def load_csv(file):
@@ -104,28 +95,29 @@ def load_csv(file):
 # ================= MAIN =================
 st.title("🤖 AI SQL Dashboard")
 
-# ================= CLEAR (FIXED) =================
+# ================= CLEAR =================
 if st.button("🧹 Clear Uploaded Files"):
     st.session_state.uploaded_files.clear()
-    st.session_state.uploader_key += 1  # 🔥 reset uploader widget
+    st.session_state.uploader_key += 1
     st.success("Uploads cleared")
     st.rerun()
 
-# ================= UPLOADER (FIXED KEY) =================
+# ================= UPLOADER =================
 files = st.file_uploader(
     "📂 Upload CSV Files",
     type=["csv"],
     accept_multiple_files=True,
-    key=f"uploader_{st.session_state.uploader_key}"  # 🔥 important
+    key=f"uploader_{st.session_state.uploader_key}"
 )
 
-# Show already uploaded
+# Show uploaded tables
 if st.session_state.uploaded_files:
     st.info(f"Uploaded tables: {list(st.session_state.uploaded_files)}")
 
 # ================= PROCESS UPLOAD =================
 if files:
     for f in files:
+
         if f.name in st.session_state.uploaded_files:
             continue
 
@@ -157,6 +149,7 @@ tables = inspector.get_table_names()
 
 if tables:
     st.subheader("📊 Preview Table")
+
     selected_table = st.selectbox("Select table", tables)
 
     if selected_table:
@@ -168,9 +161,11 @@ if tables:
 
 # ================= QUERY =================
 st.subheader("💬 Ask your data")
+
 query = st.text_input("Type your question")
 
 if st.button("Run Query"):
+
     if not query.strip():
         st.warning("Enter a query")
         st.stop()
